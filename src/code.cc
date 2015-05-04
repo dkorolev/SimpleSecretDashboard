@@ -39,9 +39,25 @@ int main(int argc, char **argv) {
   ParseDFlags(&argc, &argv);
   HTTP(FLAGS_port).Register(FLAGS_route + "/", [](Request r) { r("OK"); });
 
-  std::string line;
-  size_t i = 0;
-  while (std::getline(std::cin, line)) {
-    std::cerr << (++i) << std::endl;
+  // TOOD(dkorolev): MMQ.
+  // TODO(dkorolev): Per-entries visitor.
+  // TODO(dkorolev): Timer.
+  // TODO(dkorolev): Uptime.
+  std::string log_entry_as_string;
+  LogEntry log_entry;
+  std::unique_ptr<MidichloriansEvent> log_event;
+  size_t i = 0, j = 0, k = 0;
+  while (std::getline(std::cin, log_entry_as_string)) {
+    try {
+      ParseJSON(log_entry_as_string, log_entry);
+      try {
+        ParseJSON(log_entry.b, log_event);
+        std::cerr << ++i << ' ' << j << ' ' << k << std::endl;
+      } catch (const bricks::ParseJSONException &) {
+        std::cerr << i << ' ' << ++j << ' ' << k << std::endl;
+      }
+    } catch (const bricks::ParseJSONException &) {
+      std::cerr << i << ' ' << j << ' ' << ++k << std::endl;
+    }
   }
 }
