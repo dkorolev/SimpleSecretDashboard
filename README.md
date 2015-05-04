@@ -1,2 +1,3 @@
-# SimpleSecretDashboard
-To be removed.
+# SimpleDashboard
+
+A stub for dashboard code.

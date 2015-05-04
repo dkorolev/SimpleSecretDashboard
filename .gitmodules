@@ -1,0 +1,9 @@
+[submodule "SimpleServer"]
+	path = SimpleServer
+	url = https://github.com/KnowSheet/SimpleServer.git
+[submodule "Bricks"]
+	path = Bricks
+	url = https://github.com/KnowSheet/Bricks.git
+[submodule "MidichloriansBeta"]
+	path = MidichloriansBeta
+	url = https://github.com/KnowSheet/MidichloriansBeta.git
