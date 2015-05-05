@@ -22,7 +22,13 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 *******************************************************************************/
 
+// TODO(dkorolev): Per-entries visitor.
+
 #include <iostream>
+
+#include <atomic>  // TODO(dkorolev): Remove this once MMQ fix is in Bricks.
+#include "../Bricks/mq/inmemory/mq.h"
+
 #include "../Bricks/dflags/dflags.h"
 
 // Stored log event structure, to parse the JSON-s.
@@ -35,29 +41,122 @@ SOFTWARE.
 DEFINE_int32(port, 8687, "Port to spawn the secret server on.");
 DEFINE_string(route, "/secret", "The route to serve the dashboard on.");
 
-int main(int argc, char **argv) {
-  ParseDFlags(&argc, &argv);
-  HTTP(FLAGS_port).Register(FLAGS_route + "/", [](Request r) { r("OK"); });
+DEFINE_int32(initial_tick_wait_ms, 100, "");
+DEFINE_int32(tick_interval_ms, 2500, "");
 
-  // TOOD(dkorolev): MMQ.
-  // TODO(dkorolev): Per-entries visitor.
-  // TODO(dkorolev): Timer.
-  // TODO(dkorolev): Uptime.
+namespace mq {
+
+struct State {
+  const bricks::time::EPOCH_MILLISECONDS start_ms = bricks::time::Now();
+
+  std::map<std::string, size_t> counters_total;
+  std::map<std::string, size_t> counters_tick;
+
+  void IncrementCounter(const std::string& name, size_t delta = 1u) {
+    counters_total[name] += delta;
+    counters_tick[name] += delta;
+  }
+
+  bricks::time::MILLISECONDS_INTERVAL UptimeMs() const { return bricks::time::Now() - start_ms; }
+
+  template <typename A>
+  void save(A& ar) const {
+    ar(cereal::make_nvp("uptime_ms", static_cast<uint64_t>(UptimeMs())), CEREAL_NVP(counters_total));
+  }
+};
+
+struct Message {
+  virtual void Process(State&) = 0;
+};
+
+struct Tick : Message {
+  virtual void Process(State& state) {
+    // Dump intermediate counters and reset them between ticks.
+    std::cout << "uptime=" << static_cast<uint64_t>(state.UptimeMs()) / 1000 << "s";
+    auto& counters = state.counters_tick;
+    for (const auto cit : counters) {
+      std::cout << ' ' << cit.first << '=' << cit.second;
+    }
+    std::cout << std::endl;
+    counters.clear();
+  }
+  // Do something else.
+};
+
+struct Entry : Message {
+  std::unique_ptr<MidichloriansEvent> entry;
+  Entry() = delete;
+  explicit Entry(std::unique_ptr<MidichloriansEvent>&& entry) : entry(std::move(entry)) {}
+  virtual void Process(State& state) { state.IncrementCounter("entries_total"); }
+};
+
+struct ParseErrorLogMessage : Message {
+  virtual void Process(State& state) { state.IncrementCounter("entries_parse_json_error"); }
+};
+
+struct ParseErrorLogRecord : Message {
+  virtual void Process(State& state) { state.IncrementCounter("entries_parse_record_error"); }
+};
+
+namespace api {
+
+struct Status : Message {
+  Request r;
+  Status() = delete;
+  explicit Status(Request&& r) : r(std::move(r)) {}
+  virtual void Process(State& state) { r(state); }
+};
+
+}  // namespace mq::api
+
+// TODO(dkorolev): Ask @mzhurovich whether this could be the default processor.
+struct Consumer {
+  void OnMessage(std::unique_ptr<Message>&& message) { message->Process(state); }
+  State state;
+};
+
+}  // namespace mq
+
+int main(int argc, char** argv) {
+  ParseDFlags(&argc, &argv);
+
+  // Thread-safe sequential processing of events of multiple types, namely:
+  // 1) External log entries,
+  // 2) HTTP requests,
+  // 3) Timer events to update console line
+  mq::Consumer consumer;
+  bricks::MMQ<mq::Consumer, std::unique_ptr<mq::Message>> mmq(consumer);
+
+  HTTP(FLAGS_port).Register(FLAGS_route + "/", [](Request r) { r("OK"); });
+  HTTP(FLAGS_port).Register(FLAGS_route + "/status/",
+                            [&mmq](Request r) { mmq.EmplaceMessage(new mq::api::Status(std::move(r))); });
+
+  bool stop_timer = false;
+  std::thread timer([&mmq, &stop_timer]() {
+    std::this_thread::sleep_for(std::chrono::milliseconds(FLAGS_initial_tick_wait_ms));
+    while (!stop_timer) {
+      mmq.EmplaceMessage(new mq::Tick());
+      std::this_thread::sleep_for(std::chrono::milliseconds(FLAGS_tick_interval_ms));
+    }
+  });
+
   std::string log_entry_as_string;
   LogEntry log_entry;
   std::unique_ptr<MidichloriansEvent> log_event;
-  size_t i = 0, j = 0, k = 0;
   while (std::getline(std::cin, log_entry_as_string)) {
     try {
       ParseJSON(log_entry_as_string, log_entry);
       try {
         ParseJSON(log_entry.b, log_event);
-        std::cerr << ++i << ' ' << j << ' ' << k << std::endl;
-      } catch (const bricks::ParseJSONException &) {
-        std::cerr << i << ' ' << ++j << ' ' << k << std::endl;
+        mmq.EmplaceMessage(new mq::Entry(std::move(log_event)));
+      } catch (const bricks::ParseJSONException&) {
+        mmq.EmplaceMessage(new mq::ParseErrorLogMessage());
       }
-    } catch (const bricks::ParseJSONException &) {
-      std::cerr << i << ' ' << j << ' ' << ++k << std::endl;
+    } catch (const bricks::ParseJSONException&) {
+      mmq.EmplaceMessage(new mq::ParseErrorLogRecord());
     }
   }
+
+  stop_timer = true;
+  timer.join();
 }
