@@ -29,6 +29,8 @@ SOFTWARE.
 #include <atomic>  // TODO(dkorolev): Remove this once MMQ fix is in Bricks.
 #include "../Bricks/mq/inmemory/mq.h"
 
+#include "../Bricks/rtti/dispatcher.h"
+
 #include "../Bricks/dflags/dflags.h"
 
 // Stored log event structure, to parse the JSON-s.
@@ -85,9 +87,33 @@ struct Tick : Message {
 
 struct Entry : Message {
   std::unique_ptr<MidichloriansEvent> entry;
+  typedef std::tuple<iOSIdentifyEvent,
+                     iOSDeviceInfo,
+                     iOSAppLaunchEvent,
+                     iOSFirstLaunchEvent,
+                     iOSFocusEvent,
+                     iOSGenericEvent,
+                     iOSBaseEvent> T_TYPES;
   Entry() = delete;
   explicit Entry(std::unique_ptr<MidichloriansEvent>&& entry) : entry(std::move(entry)) {}
-  virtual void Process(State& state) { state.IncrementCounter("entries_total"); }
+  struct Processor {
+    State& state;
+    Processor() = delete;
+    explicit Processor(State& state) : state(state) {}
+    void operator()(const MidichloriansEvent& e) {
+      state.IncrementCounter("MidichloriansEvent['" + e.device_id + "','" + e.client_id + "']");
+    }
+    void operator()(const iOSBaseEvent& e) { state.IncrementCounter("iosBaseEvent['" + e.description + "']"); }
+    void operator()(const iOSGenericEvent& e) {
+      state.IncrementCounter("iosGenericEvent['" + e.event + "','" + e.source + "']");
+    }
+  };
+  virtual void Process(State& state) {
+    MidichloriansEvent& e = *entry.get();
+    Processor processor(state);
+    bricks::rtti::RuntimeTupleDispatcher<MidichloriansEvent, T_TYPES>::DispatchCall(e, processor);
+    state.IncrementCounter("entries_total");
+  }
 };
 
 struct ParseErrorLogMessage : Message {
