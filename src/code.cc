@@ -25,11 +25,14 @@ SOFTWARE.
 // TODO(dkorolev): Per-entries visitor.
 
 #include <iostream>
+#include <algorithm>
 
 #include <atomic>  // TODO(dkorolev): Remove this once MMQ fix is in Bricks.
 #include "../Bricks/mq/inmemory/mq.h"
 
 #include "../Bricks/rtti/dispatcher.h"
+
+#include "../Bricks/graph/gnuplot.h"
 
 #include "../Bricks/dflags/dflags.h"
 
@@ -53,6 +56,10 @@ struct State {
 
   std::map<std::string, size_t> counters_total;
   std::map<std::string, size_t> counters_tick;
+
+  uint64_t hour_min = static_cast<uint64_t>(-1);
+  uint64_t hour_max = static_cast<uint64_t>(0);
+  std::map<std::string, std::map<uint64_t, size_t>> events;  // Histogram [event_name][hour] = count.
 
   void IncrementCounter(const std::string& name, size_t delta = 1u) {
     counters_total[name] += delta;
@@ -86,7 +93,8 @@ struct Tick : Message {
 };
 
 struct Entry : Message {
-  std::unique_ptr<MidichloriansEvent> entry;
+  const uint64_t ms;
+  const std::unique_ptr<MidichloriansEvent> entry;
   typedef std::tuple<iOSIdentifyEvent,
                      iOSDeviceInfo,
                      iOSAppLaunchEvent,
@@ -95,22 +103,27 @@ struct Entry : Message {
                      iOSGenericEvent,
                      iOSBaseEvent> T_TYPES;
   Entry() = delete;
-  explicit Entry(std::unique_ptr<MidichloriansEvent>&& entry) : entry(std::move(entry)) {}
+  Entry(uint64_t ms, std::unique_ptr<MidichloriansEvent>&& entry) : ms(ms), entry(std::move(entry)) {}
   struct Processor {
+    const uint64_t ms;
     State& state;
     Processor() = delete;
-    explicit Processor(State& state) : state(state) {}
+    Processor(uint64_t ms, State& state) : ms(ms), state(state) {}
     void operator()(const MidichloriansEvent& e) {
       state.IncrementCounter("MidichloriansEvent['" + e.device_id + "','" + e.client_id + "']");
     }
     void operator()(const iOSBaseEvent& e) { state.IncrementCounter("iosBaseEvent['" + e.description + "']"); }
     void operator()(const iOSGenericEvent& e) {
       state.IncrementCounter("iosGenericEvent['" + e.event + "','" + e.source + "']");
+      const uint64_t hour = ms / 1000 / 60 / 60 / 24;
+      ++state.events[e.event][hour];
+      state.hour_min = std::min(state.hour_min, hour);
+      state.hour_max = std::max(state.hour_min, hour);
     }
   };
   virtual void Process(State& state) {
     MidichloriansEvent& e = *entry.get();
-    Processor processor(state);
+    Processor processor(ms, state);
     bricks::rtti::RuntimeTupleDispatcher<MidichloriansEvent, T_TYPES>::DispatchCall(e, processor);
     state.IncrementCounter("entries_total");
   }
@@ -131,6 +144,33 @@ struct Status : Message {
   Status() = delete;
   explicit Status(Request&& r) : r(std::move(r)) {}
   virtual void Process(State& state) { r(state); }
+};
+
+struct Chart : Message {
+  Request r;
+  Chart() = delete;
+  explicit Chart(Request&& r) : r(std::move(r)) {}
+  virtual void Process(State& state) {
+    using namespace bricks::gnuplot;
+    if (state.hour_min <= state.hour_max) {
+      const uint64_t current_hour = static_cast<uint64_t>(bricks::time::Now()) / 1000 / 60 / 60 / 24;
+      GNUPlot plot;
+      plot.Title("MixBoard").Grid("back").XLabel("Time").YLabel("Number of events").ImageSize(900);
+      for (const auto cit : state.events) {
+        plot.Plot(WithMeta([&state, &cit, current_hour](Plotter& p) {
+                                   for (uint64_t h = state.hour_min; h <= state.hour_max; ++h) {
+                                     const auto cit2 = cit.second.find(h);
+                                     p(-1.0 * (current_hour - h), cit2 != cit.second.end() ? cit2->second : 0);
+                                     std::cerr << (-1.0 * (current_hour - h)) << ' ';
+                                     std::cerr << (cit2 != cit.second.end() ? cit2->second : 0) << std::endl;
+                                   }
+                                 }).Name(cit.first));
+      }
+      r(plot);
+    } else {
+      r("No datapoints.");
+    }
+  }
 };
 
 }  // namespace mq::api
@@ -156,6 +196,8 @@ int main(int argc, char** argv) {
   HTTP(FLAGS_port).Register(FLAGS_route + "/", [](Request r) { r("OK"); });
   HTTP(FLAGS_port).Register(FLAGS_route + "/status/",
                             [&mmq](Request r) { mmq.EmplaceMessage(new mq::api::Status(std::move(r))); });
+  HTTP(FLAGS_port).Register(FLAGS_route + "/chart/",
+                            [&mmq](Request r) { mmq.EmplaceMessage(new mq::api::Chart(std::move(r))); });
 
   bool stop_timer = false;
   std::thread timer([&mmq, &stop_timer]() {
@@ -174,7 +216,7 @@ int main(int argc, char** argv) {
       ParseJSON(log_entry_as_string, log_entry);
       try {
         ParseJSON(log_entry.b, log_event);
-        mmq.EmplaceMessage(new mq::Entry(std::move(log_event)));
+        mmq.EmplaceMessage(new mq::Entry(log_entry.t, std::move(log_event)));
       } catch (const bricks::ParseJSONException&) {
         mmq.EmplaceMessage(new mq::ParseErrorLogMessage());
       }

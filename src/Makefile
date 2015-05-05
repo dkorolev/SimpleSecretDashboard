@@ -14,7 +14,7 @@ clean:
 	rm -rf build
 
 build/%: %.cc
-	clang++ -std=c++11 -Wall -W -O0 -o $@ $< -pthread
+	g++ -std=c++11 -Wall -W -O0 -g -o $@ $< -pthread
 
 update:
 	git submodule update --init --recursive
