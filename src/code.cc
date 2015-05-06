@@ -57,9 +57,9 @@ struct State {
   std::map<std::string, size_t> counters_total;
   std::map<std::string, size_t> counters_tick;
 
-  uint64_t hour_min = static_cast<uint64_t>(-1);
-  uint64_t hour_max = static_cast<uint64_t>(0);
-  std::map<std::string, std::map<uint64_t, size_t>> events;  // Histogram [event_name][hour] = count.
+  uint64_t abscissa_min = static_cast<uint64_t>(-1);
+  uint64_t abscissa_max = static_cast<uint64_t>(0);
+  std::map<std::string, std::map<uint64_t, size_t>> events;  // Histogram [event_name][abscissa] = count.
 
   void IncrementCounter(const std::string& name, size_t delta = 1u) {
     counters_total[name] += delta;
@@ -115,10 +115,10 @@ struct Entry : Message {
     void operator()(const iOSBaseEvent& e) { state.IncrementCounter("iosBaseEvent['" + e.description + "']"); }
     void operator()(const iOSGenericEvent& e) {
       state.IncrementCounter("iosGenericEvent['" + e.event + "','" + e.source + "']");
-      const uint64_t hour = ms / 1000 / 60 / 60 / 24;
-      ++state.events[e.event][hour];
-      state.hour_min = std::min(state.hour_min, hour);
-      state.hour_max = std::max(state.hour_min, hour);
+      const uint64_t abscissa = ms / 1000 / 60 / 60 / 24;
+      ++state.events[e.event][abscissa];
+      state.abscissa_min = std::min(state.abscissa_min, abscissa);
+      state.abscissa_max = std::max(state.abscissa_min, abscissa);
     }
   };
   virtual void Process(State& state) {
@@ -152,19 +152,26 @@ struct Chart : Message {
   explicit Chart(Request&& r) : r(std::move(r)) {}
   virtual void Process(State& state) {
     using namespace bricks::gnuplot;
-    if (state.hour_min <= state.hour_max) {
-      const uint64_t current_hour = static_cast<uint64_t>(bricks::time::Now()) / 1000 / 60 / 60 / 24;
+    if (state.abscissa_min <= state.abscissa_max) {
+      const uint64_t current_abscissa = static_cast<uint64_t>(bricks::time::Now()) / 1000 / 60 / 60 / 24;
+      // NOTE: `auto& plot = GNUPlot().Dot().Notation()` compiles, but fails miserably.
       GNUPlot plot;
-      plot.Title("MixBoard").Grid("back").XLabel("Time").YLabel("Number of events").ImageSize(900);
+      plot.Title("Sidewire")
+          .Grid("back")
+          .XLabel("Time, days ago")
+          .YLabel("Number of events")
+          .ImageSize(1550, 850)
+          .OutputFormat("pngcairo");
       for (const auto cit : state.events) {
-        plot.Plot(WithMeta([&state, &cit, current_hour](Plotter& p) {
-                                   for (uint64_t h = state.hour_min; h <= state.hour_max; ++h) {
-                                     const auto cit2 = cit.second.find(h);
-                                     p(-1.0 * (current_hour - h), cit2 != cit.second.end() ? cit2->second : 0);
-                                     std::cerr << (-1.0 * (current_hour - h)) << ' ';
-                                     std::cerr << (cit2 != cit.second.end() ? cit2->second : 0) << std::endl;
-                                   }
-                                 }).Name(cit.first));
+        // NOTE: `&cit` compiles but won't work since the method is only evaluated at render time.
+        plot.Plot(WithMeta([&state, cit, current_abscissa](Plotter& p) {
+                             for (uint64_t t = state.abscissa_min; t <= state.abscissa_max; ++t) {
+                               const auto cit2 = cit.second.find(t);
+                               p(-1.0 * (current_abscissa - t), cit2 != cit.second.end() ? cit2->second : 0);
+                             }
+                           })
+                      .Name(cit.first)
+                      .LineWidth(2.5));
       }
       r(plot);
     } else {
