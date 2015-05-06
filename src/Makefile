@@ -1,3 +1,22 @@
+CPLUSPLUS?=g++
+CPPFLAGS=-std=c++11 -Wall -W
+ifeq ($(NDEBUG),1)
+CPPFLAGS+= -O3
+else
+#CPPFLAGS+=
+endif
+LDFLAGS=-pthread
+
+PWD=$(shell pwd)
+SRC=$(wildcard *.cc)
+BIN=$(SRC:%.cc=.noshit/%)
+
+OS=$(shell uname)
+ifeq ($(OS),Darwin)
+  CPPFLAGS+= -stdlib=libc++ -x objective-c++ -fobjc-arc
+  LDFLAGS+= -framework Foundation
+endif
+
 .PHONY: all clean update indent
 
 LOGS_FILENAME="/var/log/current.jsonlines"
@@ -14,7 +33,7 @@ clean:
 	rm -rf build
 
 build/%: %.cc
-	g++ -std=c++11 -Wall -W -O0 -g -o $@ $< -pthread
+	${CPLUSPLUS} ${CPPFLAGS} -o $@ $< ${LDFLAGS}
 
 update:
 	git submodule update --init --recursive
