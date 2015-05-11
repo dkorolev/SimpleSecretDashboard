@@ -57,6 +57,15 @@ struct State {
   uint64_t abscissa_max = static_cast<uint64_t>(0);
   std::map<std::string, std::map<uint64_t, size_t>> events;  // Histogram [event_name][abscissa] = count.
 
+  struct Record {
+    std::string did;   // Device ID, copy of the key;
+    std::string cid;   // Client ID.
+    std::string aid;   // Advertising ID.
+    std::string name;  // Device name.
+  };
+  std::unordered_map<std::string, std::unordered_set<std::string>> reverse_index;  // search term -> [did].
+  std::unordered_map<std::string, Record> record;  // did -> info about this device.
+
   void IncrementCounter(const std::string& name, size_t delta = 1u) {
     counters_total[name] += delta;
     counters_tick[name] += delta;
@@ -109,21 +118,34 @@ struct Entry : Message {
       state.IncrementCounter("MidichloriansEvent['" + e.device_id + "','" + e.client_id + "']");
     }
     void operator()(const iOSDeviceInfo& e) {
-      const auto map = e.info;
-      const auto cit = map.find("deviceName");
-      if (cit != map.end()) {
-        const std::string name = cit->second;
-        // std::cerr << "Device name: " << name << ' ' << e.device_id << ' ' << e.client_id << std::endl;
-        // Build the reverse index: The components should map to `e.device_id`.
-        for (const auto cit : bricks::strings::Split(name, ::isalnum)) {
-          std::cerr << bricks::strings::ToLower(cit) << std::endl;
+      const std::string did = bricks::strings::ToLower(e.device_id);
+      if (did.empty()) {
+        std::cerr << "Warning: empty did." << std::endl;
+      } else {
+        state.reverse_index[did].insert(did);
+        auto& record = state.record[did];
+        record.did = e.device_id;
+        if (!e.client_id.empty()) {
+          state.reverse_index[bricks::strings::ToLower(e.client_id)].insert(did);
+          record.cid = e.client_id;
         }
-      }
-      const auto cit2 = map.find("advertisingIdentifier");
-      std::cerr << "DID: " << e.device_id << std::endl;
-      std::cerr << "CID: " << e.client_id << std::endl;
-      if (cit2 != map.end()) {
-        std::cerr << "AID: " << cit2->second << std::endl;
+        const auto map = e.info;
+        const auto cit = map.find("deviceName");
+        if (cit != map.end()) {
+          const std::string name = cit->second;
+          record.name = name;
+          // std::cerr << "Device name: " << name << ' ' << e.device_id << ' ' << e.client_id << std::endl;
+          // Build the reverse index: The components should map to `e.device_id`.
+          for (const auto cit : bricks::strings::Split(name, ::isalnum)) {
+            // std::cerr << bricks::strings::ToLower(cit) << std::endl;
+            state.reverse_index[bricks::strings::ToLower(cit)].insert(did);
+          }
+        }
+        const auto cit2 = map.find("advertisingIdentifier");
+        if (cit2 != map.end()) {
+          state.reverse_index[bricks::strings::ToLower(cit->second)].insert(did);
+          record.aid = cit2->second;
+        }
       }
     }
     void operator()(const iOSBaseEvent& e) { state.IncrementCounter("iosBaseEvent['" + e.description + "']"); }
@@ -208,6 +230,7 @@ int main(int argc, char** argv) {
   // 2) HTTP requests,
   // 3) Timer events to update console line
   mq::Consumer consumer;
+  const mq::State& immutable_state = consumer.state;
   bricks::mq::MMQ<std::unique_ptr<mq::Message>, mq::Consumer> mmq(consumer);
 
   HTTP(FLAGS_port).Register(FLAGS_route + "/", [](Request r) { r("OK"); });
@@ -215,7 +238,7 @@ int main(int argc, char** argv) {
                             [&mmq](Request r) { mmq.EmplaceMessage(new mq::api::Status(std::move(r))); });
   HTTP(FLAGS_port).Register(FLAGS_route + "/chart.png",
                             [&mmq](Request r) { mmq.EmplaceMessage(new mq::api::Chart(std::move(r))); });
-  HTTP(FLAGS_port).Register(FLAGS_route + "/chart", [](Request r) {
+  HTTP(FLAGS_port).Register(FLAGS_route + "/chart", [&immutable_state](Request r) {
     using namespace html;
     HTML html_scope;
     {
@@ -224,6 +247,39 @@ int main(int argc, char** argv) {
     }
     {
       BODY body;
+
+      const std::string user_query = bricks::strings::ToLower(r.url.query["q"]);
+
+      const std::vector<std::string> query = bricks::strings::Split<bricks::strings::ByWhitespace>(user_query);
+
+      std::set<std::string> search_results;
+
+      if (!query.empty()) {
+        const auto& rix = immutable_state.reverse_index;
+        const auto cit = rix.find(query[0]);
+        if (cit != rix.end()) {
+          std::set<std::string>(cit->second.begin(), cit->second.end()).swap(search_results);
+        }
+        for (size_t i = 1u; i < query.size(); ++i) {
+          const auto cit = rix.find(query[0]);
+          if (cit != rix.end()) {
+            std::set<std::string> new_search_results;
+            for (const auto r : search_results) {
+              if (cit->second.count(r)) {
+                new_search_results.insert(r);
+              }
+            }
+            new_search_results.swap(search_results);
+          } else {
+            search_results.clear();
+          }
+        }
+      }
+
+      for (const auto r : search_results) {
+        std::cerr << "[" << user_query << "] = `" << r << "`." << std::endl;
+      }
+
       {
         TABLE t({{"border", "0"}, {"align", "center"}});
         TR tr;
