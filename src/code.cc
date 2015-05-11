@@ -234,12 +234,12 @@ int main(int argc, char** argv) {
   const mq::State& immutable_state = consumer.state;
   bricks::mq::MMQ<std::unique_ptr<mq::Message>, mq::Consumer> mmq(consumer);
 
-  HTTP(FLAGS_port).Register(FLAGS_route + "/", [](Request r) { r("OK"); });
+  // HTTP(FLAGS_port).Register(FLAGS_route + "/", [](Request r) { r("OK"); });
   HTTP(FLAGS_port).Register(FLAGS_route + "/status/",
                             [&mmq](Request r) { mmq.EmplaceMessage(new mq::api::Status(std::move(r))); });
-  HTTP(FLAGS_port).Register(FLAGS_route + "/chart.png",
+  HTTP(FLAGS_port).Register(FLAGS_route + "/mixboard.png",
                             [&mmq](Request r) { mmq.EmplaceMessage(new mq::api::Chart(std::move(r))); });
-  HTTP(FLAGS_port).Register(FLAGS_route + "/chart", [&immutable_state](Request r) {
+  HTTP(FLAGS_port).Register(FLAGS_route + "/", [&immutable_state](Request r) {
     using namespace html;
     HTML html_scope;
     {
@@ -295,16 +295,12 @@ int main(int argc, char** argv) {
 
       if (search_results.empty()) {
         // TODO(dkorolev): UL/LI ?
-        IMG({{"src", "./chart.png?dim=" + r.url.query["dim"]}});
+        IMG({{"src", "./mixboard.png?x=" + r.url.query["x"] + "&y=" + r.url.query["y"]}});
       } else {
         TEXT("<br><br>");
         TABLE t({{"border", "1"}, {"align", "center"}, {"cellpadding", "8"}});
         {
           TR r({{"align", "center"}});
-          {
-            TD d0;
-            B("Browse");
-          }
           {
             TD d1;
             B("Name");
@@ -328,11 +324,8 @@ int main(int argc, char** argv) {
             const mq::Record& record = record_cit->second;
             TR r({{"align", "center"}});
             {
-              TD d0;
-              B("*");
-            }
-            {
               TD d1;
+              A a({{"href", "browse?did=" + did}});
               TEXT(record.name);
             }
             {
