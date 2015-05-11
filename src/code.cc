@@ -156,7 +156,7 @@ struct Chart : Message {
       const uint64_t current_abscissa = static_cast<uint64_t>(bricks::time::Now()) / 1000 / 60 / 60 / 24;
       // NOTE: `auto& plot = GNUPlot().Dot().Notation()` compiles, but fails miserably.
       GNUPlot plot;
-      plot.Title("Sidewire")
+      plot.Title("MixBoard")
           .Grid("back")
           .XLabel("Time, days ago")
           .YLabel("Number of events")
