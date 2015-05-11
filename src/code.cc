@@ -247,6 +247,7 @@ int main(int argc, char** argv) {
 #include "../Bricks/net/api/api.h"
 #include "../Bricks/dflags/dflags.h"
 #include "../Bricks/util/singleton.h"
+#include "../Bricks/graph/gnuplot.h"
 
 DEFINE_int32(port, 8687, "Port to spawn the secret server on.");
 DEFINE_string(route, "/secret", "The route to serve the dashboard on.");
@@ -279,14 +280,17 @@ struct State {
   }
 };
 
+// TODO(dkorolev): Eliminate some copy-pasting.
+// TODO(dkorolev): Escaping?
+
 struct HTML final {
   HTML() { ThreadLocalSingleton<State>().Begin(); }
   ~HTML() { ThreadLocalSingleton<State>().End(); }
   std::string AsString() { return ThreadLocalSingleton<State>().Commit(); }
 };
 
-#if defined(SCOPED_TAG) || defined(TEXT_TAG)
-#error "`SCOPED_TAG` and `TEXT_TAG` should not be defined by here."
+#if defined(SCOPED_TAG) || defined(TEXT_TAG) || defined(SHORT_TAG)
+#error "`SCOPED_TAG`, `TEXT_TAG` and `SHORT_TAG` should not be defined by here."
 #endif
 
 #define SCOPED_TAG(tag)                                                                   \
@@ -299,8 +303,9 @@ struct HTML final {
       for (const auto cit : params) {                                                     \
         html.Append(" ");                                                                 \
         html.Append(cit.first);                                                           \
-        html.Append("=");                                                                 \
+        html.Append("='");                                                                \
         html.Append(cit.second);                                                          \
+        html.Append("'");                                                                 \
       }                                                                                   \
       html.Append(">");                                                                   \
     }                                                                                     \
@@ -319,6 +324,26 @@ struct HTML final {
     ~tag() { ThreadLocalSingleton<State>().Append("</" #tag ">"); } \
   }
 
+#define SHORT_TAG(tag)                                                                    \
+  struct tag {                                                                            \
+    tag() = delete;                                                                       \
+    template <typename T>                                                                 \
+    void construct(T&& params) {                                                          \
+      auto& html = ThreadLocalSingleton<State>();                                         \
+      html.Append("<" #tag);                                                              \
+      for (const auto cit : params) {                                                     \
+        html.Append(" ");                                                                 \
+        html.Append(cit.first);                                                           \
+        html.Append("='");                                                                \
+        html.Append(cit.second);                                                          \
+        html.Append("'");                                                                 \
+      }                                                                                   \
+      html.Append(" />");                                                                 \
+    }                                                                                     \
+    tag(const std::vector<std::pair<std::string, std::string>>& v) { construct(v); }      \
+    tag(std::initializer_list<std::pair<std::string, std::string>> il) { construct(il); } \
+  }
+
 SCOPED_TAG(HEAD);
 SCOPED_TAG(BODY);
 
@@ -330,8 +355,11 @@ SCOPED_TAG(TABLE);
 SCOPED_TAG(TR);
 SCOPED_TAG(TD);
 
+SHORT_TAG(IMG);
+
 #undef SCOPED_TAG
-#undef PTAG
+#undef TEXT_TAG
+#undef SHORT_TAG
 
 }  // namespace html
 
@@ -375,10 +403,32 @@ int main(int argc, char** argv) {
           }
         }
       }
+      IMG({{"src", "./image.png"}});
       PRE("PRE text.");
     }
     // TODO(dkorolev): (Or John or Max) -- enable Bricks' HTTP server to send custom types via user code.
     r(html_scope.AsString(), HTTPResponseCode.OK, "text/html");
+  });
+  HTTP(FLAGS_port).Register(FLAGS_route + "/image.png", [](Request r) {
+    using namespace bricks::gnuplot;
+    r(GNUPlot()
+          .Title("Imagine all the people ...")
+          .NoKey()
+          .Grid("back")
+          .XLabel("... living life in peace")
+          .YLabel("John Lennon, \"Imagine\"")
+          .Plot(WithMeta([](Plotter p) {
+                           const size_t N = 1000;
+                           for (size_t i = 0; i < N; ++i) {
+                             const double t = M_PI * 2 * i / (N - 1);
+                             p(16 * pow(sin(t), 3),
+                               -(13 * cos(t) + 5 * cos(t * 2) - 2 * cos(t * 3) - cos(t * 4)));
+                           }
+                         })
+                    .LineWidth(5)
+                    .Color("rgb '#FF0080'"))
+          .ImageSize(400)
+          .OutputFormat("pngcairo"));
   });
   HTTP(FLAGS_port).Join();
 }
