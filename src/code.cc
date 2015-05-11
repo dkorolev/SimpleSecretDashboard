@@ -24,6 +24,7 @@ SOFTWARE.
 
 // TODO(dkorolev): Per-entries visitor.
 
+/*
 #include <iostream>
 #include <algorithm>
 
@@ -234,4 +235,150 @@ int main(int argc, char** argv) {
 
   stop_timer = true;
   timer.join();
+}
+*/
+
+#include <vector>
+#include <string>
+#include <utility>
+
+#include <initializer_list>
+
+#include "../Bricks/net/api/api.h"
+#include "../Bricks/dflags/dflags.h"
+#include "../Bricks/util/singleton.h"
+
+DEFINE_int32(port, 8687, "Port to spawn the secret server on.");
+DEFINE_string(route, "/secret", "The route to serve the dashboard on.");
+
+namespace html {
+
+using bricks::ThreadLocalSingleton;
+
+struct State {
+  std::string html;
+  enum { NONE, IN_PROGRESS, COMMITTED } state = NONE;
+  void Begin() {
+    assert(state == NONE);
+    html = "<!doctype html>\n";
+    state = IN_PROGRESS;
+  }
+  std::string Commit() {
+    assert(state == IN_PROGRESS);
+    state = COMMITTED;
+    return html;
+  }
+  template <typename T>
+  void Append(T&& content) {
+    assert(state == IN_PROGRESS);
+    html.append(content);
+  }
+  void End() {
+    assert(state == COMMITTED);
+    state = NONE;
+  }
+};
+
+struct HTML final {
+  HTML() { ThreadLocalSingleton<State>().Begin(); }
+  ~HTML() { ThreadLocalSingleton<State>().End(); }
+  std::string AsString() { return ThreadLocalSingleton<State>().Commit(); }
+};
+
+#if defined(SCOPED_TAG) || defined(TEXT_TAG)
+#error "`SCOPED_TAG` and `TEXT_TAG` should not be defined by here."
+#endif
+
+#define SCOPED_TAG(tag)                                                                   \
+  struct tag {                                                                            \
+    tag() { ThreadLocalSingleton<State>().Append("<" #tag ">"); }                         \
+    template <typename T>                                                                 \
+    void construct(T&& params) {                                                          \
+      auto& html = ThreadLocalSingleton<State>();                                         \
+      html.Append("<" #tag);                                                              \
+      for (const auto cit : params) {                                                     \
+        html.Append(" ");                                                                 \
+        html.Append(cit.first);                                                           \
+        html.Append("=");                                                                 \
+        html.Append(cit.second);                                                          \
+      }                                                                                   \
+      html.Append(">");                                                                   \
+    }                                                                                     \
+    tag(const std::vector<std::pair<std::string, std::string>>& v) { construct(v); }      \
+    tag(std::initializer_list<std::pair<std::string, std::string>> il) { construct(il); } \
+    ~tag() { ThreadLocalSingleton<State>().Append("</" #tag ">"); }                       \
+  }
+
+#define TEXT_TAG(tag)                                               \
+  struct tag {                                                      \
+    tag() { ThreadLocalSingleton<State>().Append("<" #tag ">"); }   \
+    tag(const std::string& content) {                               \
+      ThreadLocalSingleton<State>().Append("<" #tag ">");           \
+      ThreadLocalSingleton<State>().Append(content);                \
+    }                                                               \
+    ~tag() { ThreadLocalSingleton<State>().Append("</" #tag ">"); } \
+  }
+
+SCOPED_TAG(HEAD);
+SCOPED_TAG(BODY);
+
+TEXT_TAG(TITLE);
+TEXT_TAG(P);
+TEXT_TAG(PRE);
+
+SCOPED_TAG(TABLE);
+SCOPED_TAG(TR);
+SCOPED_TAG(TD);
+
+#undef SCOPED_TAG
+#undef PTAG
+
+}  // namespace html
+
+int main(int argc, char** argv) {
+  ParseDFlags(&argc, &argv);
+
+  HTTP(FLAGS_port).Register(FLAGS_route + "/", [](Request r) {
+    using namespace html;
+    HTML html_scope;
+    {
+      HEAD head;
+      TITLE("Test page");
+    }
+    {
+      BODY body;
+      P("Hello, world!");
+      {
+        std::string s = "1";
+        TABLE t({{"border", s}});
+        {
+          TR r({{"align", "right"}});
+          {
+            TD d;
+            P("foo");
+          }
+          {
+            TD d;
+            P("bar");
+          }
+        }
+        {
+          std::vector<std::pair<std::string, std::string>> v{{"align", "center"}};
+          TR r(v);
+          {
+            TD d;
+            P("baz");
+          }
+          {
+            TD d;
+            P("meh");
+          }
+        }
+      }
+      PRE("PRE text.");
+    }
+    // TODO(dkorolev): (Or John or Max) -- enable Bricks' HTTP server to send custom types via user code.
+    r(html_scope.AsString(), HTTPResponseCode.OK, "text/html");
+  });
+  HTTP(FLAGS_port).Join();
 }
