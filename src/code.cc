@@ -48,7 +48,7 @@ DEFINE_int32(tick_interval_ms, 2500, "");
 namespace mq {
 
 struct Record {
-  std::string did;   // Device ID, copy of the key;
+  std::string did;   // Device ID, copy of the key.
   std::string cid;   // Client ID.
   std::string aid;   // Advertising ID.
   std::string name;  // Device name.
@@ -59,13 +59,15 @@ struct TimelineEvent {
   TimelineEvent() = delete;
   explicit TimelineEvent(uint64_t ms) : ms(ms) {}
   virtual ~TimelineEvent() = default;
-  virtual std::string AsString() { return "<ERROR>"; }
+  virtual std::string EventAsString() { return "<EVENT>"; }
+  virtual std::string DetailsAsString() { return "<DETAILS>"; }
 };
 
 struct TimelineFocusEvent : TimelineEvent {
   bool gained_focus;
   TimelineFocusEvent(uint64_t ms, bool gained_focus) : TimelineEvent(ms), gained_focus(gained_focus) {}
-  virtual std::string AsString() { return gained_focus ? "Activated" : "Backgrounded"; }
+  virtual std::string EventAsString() { return "Focus"; }
+  virtual std::string DetailsAsString() { return gained_focus ? "Activated" : "Backgrounded"; }
 };
 
 struct State {
@@ -270,6 +272,30 @@ void RenderImage() {
   IMG({{"src", "./mixboard.png"}});  //?x=" + r.url.query["x"] + "&y=" + r.url.query["y"]}});
 }
 
+std::string TimeIntervalAsString(uint64_t ms) {
+  int s = static_cast<int>(1e-3 * ms + 0.5);
+  using bricks::strings::Printf;
+  if (s < 60) {
+    return Printf("%ds", s);
+  } else {
+    int m = s / 60;
+    s %= 60;
+    if (m < 60) {
+      return Printf("%dm %ds", m, s);
+    } else {
+      int h = m / 60;
+      m %= 60;
+      if (h < 24) {
+        return Printf("%dh %dm %ds", h, m, s);
+      } else {
+        const int d = h / 24;
+        h %= 24;
+        return Printf("%dd %dh %dm %ds", d, h, m, s);
+      }
+    }
+  }
+}
+
 int main(int argc, char** argv) {
   ParseDFlags(&argc, &argv);
 
@@ -387,47 +413,76 @@ int main(int argc, char** argv) {
   });
 
   HTTP(FLAGS_port).Register(FLAGS_route + "/browse", [&immutable_state](Request r) {
-    const std::string did = bricks::strings::ToLower(r.url.query["did"]);
+    const std::string user_query = bricks::strings::ToLower(r.url.query["q"]);
+    if (!user_query.empty()) {
+      r("",
+        HTTPResponseCode.Found,
+        "text/html",
+        HTTPHeaders({{"Location", FLAGS_route + "/?q=" + user_query}}));
+    } else {
+      const std::string did = bricks::strings::ToLower(r.url.query["did"]);
 
-    using namespace html;
-    HTML html_scope;
-    {
-      HEAD head;
-      TITLE("Browse by device");
-    }
-    {
-      BODY body;
+      using namespace html;
+      HTML html_scope;
+      {
+        HEAD head;
+        TITLE("Browse by device");
+      }
+      {
+        BODY body;
 
-      RenderSearchBox();
+        RenderSearchBox();
 
-      const auto cit = immutable_state.timeline.find(did);
-      if (cit != immutable_state.timeline.end()) {
-        typedef std::map<uint64_t, std::set<std::unique_ptr<mq::TimelineEvent>>> TimelineEntry;
-        const TimelineEntry& t = cit->second;
+        const auto cit = immutable_state.timeline.find(did);
+        if (cit != immutable_state.timeline.end()) {
+          typedef std::map<uint64_t, std::set<std::unique_ptr<mq::TimelineEvent>>> TimelineEntry;
+          const TimelineEntry& t = cit->second;
 
-        TABLE table({{"border", "1"}, {"align", "center"}, {"cellpadding", "8"}});
-        for (const auto& events_per_ms : t) {
-          for (const auto& single_event : events_per_ms.second) {
-            TR r;
+          const uint64_t now = static_cast<uint64_t>(bricks::time::Now());
+
+          TABLE table({{"border", "1"}, {"align", "center"}, {"cellpadding", "8"}});
+          {
+            TR r({{"align", "center"}});
             {
               TD d;
-              TEXT(bricks::strings::ToString(events_per_ms.first));
-            }  // Timestamp.
+              B("Timestamp");
+            }
             {
               TD d;
-              TEXT(single_event->AsString());
+              B("Event");
+            }
+            {
+              TD d;
+              B("Details");
             }
           }
+          for (auto time_cit = t.rbegin(); time_cit != t.rend(); ++time_cit) {
+            //        for (const auto& events_per_ms : t) {
+            for (const auto& single_event : time_cit->second) {
+              TR r({{"align", "center"}});
+              {
+                TD d;
+                TEXT(TimeIntervalAsString(now - time_cit->first) + " ago");
+              }
+              {
+                TD d;
+                TEXT(single_event->EventAsString());
+              }
+              {
+                TD d;
+                TEXT(single_event->DetailsAsString());
+              }
+            }
+          }
+        } else {
+          B("Device ID not found.");
+          TEXT("<br><br>");
+          RenderImage();
         }
-      } else {
-        B("Device ID not found.");
-        TEXT("<br><br>");
-        RenderImage();
       }
+
+      r(html_scope.AsString(), HTTPResponseCode.OK, "text/html");
     }
-
-    r(html_scope.AsString(), HTTPResponseCode.OK, "text/html");
-
   });
 
   bool stop_timer = false;
