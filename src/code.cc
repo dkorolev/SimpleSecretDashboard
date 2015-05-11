@@ -54,6 +54,20 @@ struct Record {
   std::string name;  // Device name.
 };
 
+struct TimelineEvent {
+  uint64_t ms;
+  TimelineEvent() = delete;
+  explicit TimelineEvent(uint64_t ms) : ms(ms) {}
+  virtual ~TimelineEvent() = default;
+  virtual std::string AsString() { return "<ERROR>"; }
+};
+
+struct TimelineFocusEvent : TimelineEvent {
+  bool gained_focus;
+  TimelineFocusEvent(uint64_t ms, bool gained_focus) : TimelineEvent(ms), gained_focus(gained_focus) {}
+  virtual std::string AsString() { return gained_focus ? "Activated" : "Backgrounded"; }
+};
+
 struct State {
   const bricks::time::EPOCH_MILLISECONDS start_ms = bricks::time::Now();
 
@@ -66,6 +80,9 @@ struct State {
 
   std::unordered_map<std::string, std::unordered_set<std::string>> reverse_index;  // search term -> [did].
   std::unordered_map<std::string, Record> record;  // did -> info about this device.
+
+  // did -> timestamp -> [event], ordered by timestamp.
+  std::unordered_map<std::string, std::map<uint64_t, std::set<std::unique_ptr<TimelineEvent>>>> timeline;
 
   void IncrementCounter(const std::string& name, size_t delta = 1u) {
     counters_total[name] += delta;
@@ -118,10 +135,19 @@ struct Entry : Message {
     void operator()(const MidichloriansEvent& e) {
       state.IncrementCounter("MidichloriansEvent['" + e.device_id + "','" + e.client_id + "']");
     }
+    void operator()(const iOSFocusEvent& e) {
+      const std::string did = bricks::strings::ToLower(e.device_id);
+      if (did.empty()) {
+        std::cerr << "Warning: empty did for `iOSFocusEvent`." << std::endl;
+      } else {
+        state.timeline[did][ms].insert(
+            std::unique_ptr<TimelineEvent>(new TimelineFocusEvent(ms, e.gained_focus)));
+      }
+    }
     void operator()(const iOSDeviceInfo& e) {
       const std::string did = bricks::strings::ToLower(e.device_id);
       if (did.empty()) {
-        std::cerr << "Warning: empty did." << std::endl;
+        std::cerr << "Warning: empty did for `iOSDeviceInfo`." << std::endl;
       } else {
         state.reverse_index[did].insert(did);
         auto& record = state.record[did];
@@ -223,6 +249,27 @@ struct Consumer {
 
 }  // namespace mq
 
+void RenderSearchBox(const std::string& q = "") {
+  using namespace html;
+  {
+    TABLE table({{"border", "0"}, {"align", "center"}});
+    TR r;
+    TD d({{"align", "center"}});
+    FORM form({{"align", "center"}});
+    INPUT input({{"type", "text"},
+                 {"style", "font-size:50px;text-align:center"},
+                 {"name", "q"},
+                 {"value", q},
+                 {"autocomplete", "off"}});
+  }
+  TEXT("<br><br>");
+}
+
+void RenderImage() {
+  using namespace html;
+  IMG({{"src", "./mixboard.png"}});  //?x=" + r.url.query["x"] + "&y=" + r.url.query["y"]}});
+}
+
 int main(int argc, char** argv) {
   ParseDFlags(&argc, &argv);
 
@@ -281,40 +328,29 @@ int main(int argc, char** argv) {
         std::cerr << "[" << user_query << "] = `" << r << "`." << std::endl;
       }
 
-      {
-        TABLE t({{"border", "0"}, {"align", "center"}});
-        TR tr;
-        TD td({{"align", "center"}});
-        FORM form({{"align", "center"}});
-        INPUT input({{"type", "text"},
-                     {"style", "font-size:50px;text-align:center"},
-                     {"name", "q"},
-                     {"value", r.url.query["q"]},
-                     {"autocomplete", "off"}});
-      }
+      RenderSearchBox(r.url.query["q"]);
 
       if (search_results.empty()) {
-        // TODO(dkorolev): UL/LI ?
-        IMG({{"src", "./mixboard.png?x=" + r.url.query["x"] + "&y=" + r.url.query["y"]}});
+        RenderImage();
       } else {
-        TEXT("<br><br>");
-        TABLE t({{"border", "1"}, {"align", "center"}, {"cellpadding", "8"}});
+        // TODO(dkorolev): UL/LI ?
+        TABLE table({{"border", "1"}, {"align", "center"}, {"cellpadding", "8"}});
         {
           TR r({{"align", "center"}});
           {
-            TD d1;
+            TD d;
             B("Name");
           }
           {
-            TD d2;
+            TD d;
             B("Device ID");
           }
           {
-            TD d3;
+            TD d;
             B("Client ID");
           }
           {
-            TD d4;
+            TD d;
             B("Advertising ID");
           }
         }
@@ -348,6 +384,50 @@ int main(int argc, char** argv) {
     }
     // TODO(dkorolev): (Or John or Max) -- enable Bricks' HTTP server to send custom types via user code.
     r(html_scope.AsString(), HTTPResponseCode.OK, "text/html");
+  });
+
+  HTTP(FLAGS_port).Register(FLAGS_route + "/browse", [&immutable_state](Request r) {
+    const std::string did = bricks::strings::ToLower(r.url.query["did"]);
+
+    using namespace html;
+    HTML html_scope;
+    {
+      HEAD head;
+      TITLE("Browse by device");
+    }
+    {
+      BODY body;
+
+      RenderSearchBox();
+
+      const auto cit = immutable_state.timeline.find(did);
+      if (cit != immutable_state.timeline.end()) {
+        typedef std::map<uint64_t, std::set<std::unique_ptr<mq::TimelineEvent>>> TimelineEntry;
+        const TimelineEntry& t = cit->second;
+
+        TABLE table({{"border", "1"}, {"align", "center"}, {"cellpadding", "8"}});
+        for (const auto& events_per_ms : t) {
+          for (const auto& single_event : events_per_ms.second) {
+            TR r;
+            {
+              TD d;
+              TEXT(bricks::strings::ToString(events_per_ms.first));
+            }  // Timestamp.
+            {
+              TD d;
+              TEXT(single_event->AsString());
+            }
+          }
+        }
+      } else {
+        B("Device ID not found.");
+        TEXT("<br><br>");
+        RenderImage();
+      }
+    }
+
+    r(html_scope.AsString(), HTTPResponseCode.OK, "text/html");
+
   });
 
   bool stop_timer = false;
