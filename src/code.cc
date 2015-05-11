@@ -355,6 +355,8 @@ SCOPED_TAG(TABLE);
 SCOPED_TAG(TR);
 SCOPED_TAG(TD);
 
+SCOPED_TAG(A);
+
 SHORT_TAG(IMG);
 
 #undef SCOPED_TAG
@@ -375,6 +377,11 @@ int main(int argc, char** argv) {
     }
     {
       BODY body;
+      for (const auto i : {240, 360, 480}) {
+        const auto s = bricks::strings::ToString(i);
+        A a({{"href", "?dim=" + s}});
+        P p("Link: " + s);
+      }
       P("Hello, world!");
       {
         std::string s = "1";
@@ -403,13 +410,14 @@ int main(int argc, char** argv) {
           }
         }
       }
-      IMG({{"src", "./image.png"}});
+      IMG({{"src", "./image.png?dim=" + r.url.query["dim"]}});
       PRE("PRE text.");
     }
     // TODO(dkorolev): (Or John or Max) -- enable Bricks' HTTP server to send custom types via user code.
     r(html_scope.AsString(), HTTPResponseCode.OK, "text/html");
   });
   HTTP(FLAGS_port).Register(FLAGS_route + "/image.png", [](Request r) {
+    const auto size = bricks::strings::FromString<size_t>(r.url.query["dim"]);
     using namespace bricks::gnuplot;
     r(GNUPlot()
           .Title("Imagine all the people ...")
@@ -427,7 +435,7 @@ int main(int argc, char** argv) {
                          })
                     .LineWidth(5)
                     .Color("rgb '#FF0080'"))
-          .ImageSize(400)
+          .ImageSize(size ? size : 500)
           .OutputFormat("pngcairo"));
   });
   HTTP(FLAGS_port).Join();
