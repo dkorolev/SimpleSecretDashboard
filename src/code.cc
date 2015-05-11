@@ -108,6 +108,24 @@ struct Entry : Message {
     void operator()(const MidichloriansEvent& e) {
       state.IncrementCounter("MidichloriansEvent['" + e.device_id + "','" + e.client_id + "']");
     }
+    void operator()(const iOSDeviceInfo& e) {
+      const auto map = e.info;
+      const auto cit = map.find("deviceName");
+      if (cit != map.end()) {
+        const std::string name = cit->second;
+        // std::cerr << "Device name: " << name << ' ' << e.device_id << ' ' << e.client_id << std::endl;
+        // Build the reverse index: The components should map to `e.device_id`.
+        for (const auto cit : bricks::strings::Split(name, ::isalnum)) {
+          std::cerr << bricks::strings::ToLower(cit) << std::endl;
+        }
+      }
+      const auto cit2 = map.find("advertisingIdentifier");
+      std::cerr << "DID: " << e.device_id << std::endl;
+      std::cerr << "CID: " << e.client_id << std::endl;
+      if (cit2 != map.end()) {
+        std::cerr << "AID: " << cit2->second << std::endl;
+      }
+    }
     void operator()(const iOSBaseEvent& e) { state.IncrementCounter("iosBaseEvent['" + e.description + "']"); }
     void operator()(const iOSGenericEvent& e) {
       state.IncrementCounter("iosGenericEvent['" + e.event + "','" + e.source + "']");
@@ -152,11 +170,8 @@ struct Chart : Message {
       const uint64_t current_abscissa = static_cast<uint64_t>(bricks::time::Now()) / 1000 / 60 / 60 / 24;
       // NOTE: `auto& plot = GNUPlot().Dot().Notation()` compiles, but fails miserably.
       GNUPlot plot;
-      plot.Grid("back")
-          .XLabel("Time, days ago")
-          .YLabel("Number of events")
-          .ImageSize(1500, 750)
-          .OutputFormat("pngcairo");
+      plot.Grid("back").XLabel("Time, days ago").YLabel("Number of events").ImageSize(1500, 750).OutputFormat(
+          "pngcairo");
       // .Title("MixBoard") -- Commented out for a cleaner page. -- D.K.
       for (const auto cit : state.events) {
         // NOTE: `&cit` compiles but won't work since the method is only evaluated at render time.
