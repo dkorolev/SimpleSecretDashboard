@@ -70,8 +70,8 @@ struct HTML final {
   std::string AsString() { return ThreadLocalSingleton<State>().Commit(); }
 };
 
-#if defined(SCOPED_TAG) || defined(TEXT_TAG) || defined(SHORT_TAG)
-#error "`SCOPED_TAG`, `TEXT_TAG` and `SHORT_TAG` should not be defined by here."
+#if defined(SCOPED_TAG) || defined(TEXT_TAG) || defined(SHORT_TAG) || defined(STANDALONE_TAG)
+#error "`SCOPED_TAG`, `TEXT_TAG`, ``SHORT_TAG` and `STANDALONE_TAG` should not be defined by here."
 #endif
 
 #define SCOPED_TAG(tag)                                                                   \
@@ -125,6 +125,26 @@ struct HTML final {
     tag(std::initializer_list<std::pair<std::string, std::string>> il) { construct(il); } \
   }
 
+#define STANDALONE_TAG(tag)                                                               \
+  struct tag {                                                                            \
+    tag() = delete;                                                                       \
+    template <typename T>                                                                 \
+    void construct(T&& params) {                                                          \
+      auto& html = ThreadLocalSingleton<State>();                                         \
+      html.Append("<" #tag);                                                              \
+      for (const auto cit : params) {                                                     \
+        html.Append(" ");                                                                 \
+        html.Append(cit.first);                                                           \
+        html.Append("='");                                                                \
+        html.Append(cit.second);                                                          \
+        html.Append("'");                                                                 \
+      }                                                                                   \
+      html.Append(">");                                                                   \
+    }                                                                                     \
+    tag(const std::vector<std::pair<std::string, std::string>>& v) { construct(v); }      \
+    tag(std::initializer_list<std::pair<std::string, std::string>> il) { construct(il); } \
+  }
+
 SCOPED_TAG(HEAD);
 SCOPED_TAG(BODY);
 
@@ -138,11 +158,24 @@ SCOPED_TAG(TD);
 
 SCOPED_TAG(A);
 
+TEXT_TAG(B);
+TEXT_TAG(I);
+TEXT_TAG(U);
+
 SHORT_TAG(IMG);
+
+SCOPED_TAG(FORM);
+STANDALONE_TAG(INPUT);
+
+template <typename T>
+void TEXT(T&& x) {
+  ThreadLocalSingleton<State>().Append(std::forward<T>(x));
+}
 
 #undef SCOPED_TAG
 #undef TEXT_TAG
 #undef SHORT_TAG
+#undef STANDALONE_TAG
 
 }  // namespace html
 

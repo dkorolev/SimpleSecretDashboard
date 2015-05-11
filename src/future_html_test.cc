@@ -22,14 +22,19 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 *******************************************************************************/
 
+// TODO(dkorolev): Per-entries visitor.
+
+/*
 #include <iostream>
 #include <algorithm>
 
-#include "html.h"
-
+#include <atomic>  // TODO(dkorolev): Remove this once MMQ fix is in Bricks.
 #include "../Bricks/mq/inmemory/mq.h"
-#include "../Bricks/rtti/dispatcher.h"  // TODO(dkorolev): The right visitor.
+
+#include "../Bricks/rtti/dispatcher.h"
+
 #include "../Bricks/graph/gnuplot.h"
+
 #include "../Bricks/dflags/dflags.h"
 
 // Stored log event structure, to parse the JSON-s.
@@ -152,12 +157,12 @@ struct Chart : Message {
       const uint64_t current_abscissa = static_cast<uint64_t>(bricks::time::Now()) / 1000 / 60 / 60 / 24;
       // NOTE: `auto& plot = GNUPlot().Dot().Notation()` compiles, but fails miserably.
       GNUPlot plot;
-      plot.Grid("back")
+      plot.Title("MixBoard")
+          .Grid("back")
           .XLabel("Time, days ago")
           .YLabel("Number of events")
-          .ImageSize(1500, 750)
+          .ImageSize(1550, 850)
           .OutputFormat("pngcairo");
-      // .Title("MixBoard") -- Commented out for a cleaner page. -- D.K.
       for (const auto cit : state.events) {
         // NOTE: `&cit` compiles but won't work since the method is only evaluated at render time.
         plot.Plot(WithMeta([&state, cit, current_abscissa](Plotter& p) {
@@ -178,6 +183,7 @@ struct Chart : Message {
 
 }  // namespace mq::api
 
+// TODO(dkorolev): Ask @mzhurovich whether this could be the default processor.
 struct Consumer {
   void OnMessage(std::unique_ptr<Message>&& message) { message->Process(state); }
   State state;
@@ -193,39 +199,13 @@ int main(int argc, char** argv) {
   // 2) HTTP requests,
   // 3) Timer events to update console line
   mq::Consumer consumer;
-  bricks::mq::MMQ<std::unique_ptr<mq::Message>, mq::Consumer> mmq(consumer);
+  bricks::MMQ<mq::Consumer, std::unique_ptr<mq::Message>> mmq(consumer);
 
   HTTP(FLAGS_port).Register(FLAGS_route + "/", [](Request r) { r("OK"); });
   HTTP(FLAGS_port).Register(FLAGS_route + "/status/",
                             [&mmq](Request r) { mmq.EmplaceMessage(new mq::api::Status(std::move(r))); });
-  HTTP(FLAGS_port).Register(FLAGS_route + "/chart.png",
+  HTTP(FLAGS_port).Register(FLAGS_route + "/chart/",
                             [&mmq](Request r) { mmq.EmplaceMessage(new mq::api::Chart(std::move(r))); });
-  HTTP(FLAGS_port).Register(FLAGS_route + "/chart", [](Request r) {
-    using namespace html;
-    HTML html_scope;
-    {
-      HEAD head;
-      TITLE("MixBoard Status Page");
-    }
-    {
-      BODY body;
-      {
-        TABLE t({{"border", "0"}, {"align", "center"}});
-        TR tr;
-        TD td({{"align", "center"}});
-        FORM form({{"align", "center"}});
-        INPUT input({{"type", "text"},
-                     {"style", "font-size:50px;text-align:center"},
-                     {"name", "q"},
-                     {"value", r.url.query["q"]},
-                     {"autocomplete", "off"}});
-      }
-      // TODO(dkorolev): UL/LI ?
-      IMG({{"src", "./chart.png?dim=" + r.url.query["dim"]}});
-    }
-    // TODO(dkorolev): (Or John or Max) -- enable Bricks' HTTP server to send custom types via user code.
-    r(html_scope.AsString(), HTTPResponseCode.OK, "text/html");
-  });
 
   bool stop_timer = false;
   std::thread timer([&mmq, &stop_timer]() {
@@ -255,4 +235,95 @@ int main(int argc, char** argv) {
 
   stop_timer = true;
   timer.join();
+}
+*/
+
+#include <vector>
+#include <string>
+#include <utility>
+
+#include "html.h"
+
+#include "../Bricks/net/api/api.h"
+#include "../Bricks/dflags/dflags.h"
+#include "../Bricks/util/singleton.h"
+#include "../Bricks/graph/gnuplot.h"
+
+DEFINE_int32(port, 8687, "Port to spawn the secret server on.");
+DEFINE_string(route, "/secret", "The route to serve the dashboard on.");
+
+int main(int argc, char** argv) {
+  ParseDFlags(&argc, &argv);
+
+  HTTP(FLAGS_port).Register(FLAGS_route + "/", [](Request r) {
+    using namespace html;
+    HTML html_scope;
+    {
+      HEAD head;
+      TITLE("Test page");
+    }
+    {
+      BODY body;
+      for (const auto i : {240, 360, 480}) {
+        const auto s = bricks::strings::ToString(i);
+        A a({{"href", "?dim=" + s}});
+        P p("Link: " + s);
+      }
+      P("Hello, world!");
+      {
+        std::string s = "1";
+        TABLE t({{"border", s}});
+        {
+          TR r({{"align", "right"}});
+          {
+            TD d;
+            P("foo");
+          }
+          {
+            TD d;
+            P("bar");
+          }
+        }
+        {
+          std::vector<std::pair<std::string, std::string> > v{{"align", "center"}};
+          TR r(v);
+          {
+            TD d;
+            P("baz");
+          }
+          {
+            TD d;
+            P("meh");
+          }
+        }
+      }
+      IMG({{"src", "./image.png?dim=" + r.url.query["dim"]}});
+      PRE("PRE text.");
+    }
+    // TODO(dkorolev): (Or John or Max) -- enable Bricks' HTTP server to send custom types via user code.
+    r(html_scope.AsString(), HTTPResponseCode.OK, "text/html");
+  });
+  HTTP(FLAGS_port).Register(FLAGS_route + "/image.png", [](Request r) {
+    const auto size = bricks::strings::FromString<size_t>(r.url.query["dim"]);
+    using namespace bricks::gnuplot;
+    r(GNUPlot()
+          .Title("Imagine all the people ...")
+          .NoKey()
+          .Grid("back")
+          .XLabel("... living life in peace")
+          .YLabel("John Lennon, \"Imagine\"")
+          .Plot(WithMeta([](Plotter p) {
+                           const size_t N = 1000;
+                           for (size_t i = 0; i < N; ++i) {
+                             const double t = M_PI * 2 * i / (N - 1);
+                             p(16 * pow(sin(t), 3),
+                               -(13 * cos(t) + 5 * cos(t * 2) - 2 * cos(t * 3) - cos(t * 4)));
+                           }
+                         })
+                    .LineWidth(5)
+                    .Color("rgb '#FF0080'"))
+          .ImageSize(size ? size : 500)
+          .OutputFormat("pngcairo"));
+  });
+  HTTP(FLAGS_port).Join();
 }
