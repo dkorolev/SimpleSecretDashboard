@@ -47,6 +47,13 @@ DEFINE_int32(tick_interval_ms, 2500, "");
 
 namespace mq {
 
+struct Record {
+  std::string did;   // Device ID, copy of the key;
+  std::string cid;   // Client ID.
+  std::string aid;   // Advertising ID.
+  std::string name;  // Device name.
+};
+
 struct State {
   const bricks::time::EPOCH_MILLISECONDS start_ms = bricks::time::Now();
 
@@ -57,12 +64,6 @@ struct State {
   uint64_t abscissa_max = static_cast<uint64_t>(0);
   std::map<std::string, std::map<uint64_t, size_t>> events;  // Histogram [event_name][abscissa] = count.
 
-  struct Record {
-    std::string did;   // Device ID, copy of the key;
-    std::string cid;   // Client ID.
-    std::string aid;   // Advertising ID.
-    std::string name;  // Device name.
-  };
   std::unordered_map<std::string, std::unordered_set<std::string>> reverse_index;  // search term -> [did].
   std::unordered_map<std::string, Record> record;  // did -> info about this device.
 
@@ -291,8 +292,66 @@ int main(int argc, char** argv) {
                      {"value", r.url.query["q"]},
                      {"autocomplete", "off"}});
       }
-      // TODO(dkorolev): UL/LI ?
-      IMG({{"src", "./chart.png?dim=" + r.url.query["dim"]}});
+
+      if (search_results.empty()) {
+        // TODO(dkorolev): UL/LI ?
+        IMG({{"src", "./chart.png?dim=" + r.url.query["dim"]}});
+      } else {
+        TEXT("<br><br>");
+        TABLE t({{"border", "1"}, {"align", "center"}, {"cellpadding", "8"}});
+        {
+          TR r({{"align", "center"}});
+          {
+            TD d0;
+            B("Browse");
+          }
+          {
+            TD d1;
+            B("Name");
+          }
+          {
+            TD d2;
+            B("Device ID");
+          }
+          {
+            TD d3;
+            B("Client ID");
+          }
+          {
+            TD d4;
+            B("Advertising ID");
+          }
+        }
+        for (const auto did : search_results) {
+          const auto record_cit = immutable_state.record.find(did);
+          if (record_cit != immutable_state.record.end()) {
+            const mq::Record& record = record_cit->second;
+            TR r({{"align", "center"}});
+            {
+              TD d0;
+              B("*");
+            }
+            {
+              TD d1;
+              TEXT(record.name);
+            }
+            {
+              TD d2;
+              TEXT(record.did);
+            }  // == lookup key
+            {
+              TD d3;
+              TEXT(record.cid);
+            }
+            {
+              TD d4;
+              TEXT(record.aid);
+            }
+          } else {
+            std::cerr << "Warning: No record for `" << did << "`." << std::endl;
+          }
+        }
+      }
     }
     // TODO(dkorolev): (Or John or Max) -- enable Bricks' HTTP server to send custom types via user code.
     r(html_scope.AsString(), HTTPResponseCode.OK, "text/html");
