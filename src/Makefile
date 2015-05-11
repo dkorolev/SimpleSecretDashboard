@@ -36,7 +36,7 @@ build/%: %.cc
 	${CPLUSPLUS} ${CPPFLAGS} -o $@ $< ${LDFLAGS}
 
 update:
-	git submodule update --init --recursive
+	(cd .. ; git submodule update --init --recursive)
 
 indent:
 	../../Bricks/KnowSheet/scripts/indent.sh
